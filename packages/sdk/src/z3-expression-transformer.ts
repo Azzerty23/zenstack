@@ -132,9 +132,11 @@ export class Z3ExpressionTransformer {
             if (this.options?.isPostGuard !== true) {
                 throw new Z3ExpressionTransformerError(`future() is only supported in postUpdate rules`);
             }
-            return expr.member.ref.name;
+            return `${expr.member.ref.$container.name}.${expr.member.ref.name}`;
         } else {
-            return `${this.transform(expr.operand)}?.${expr.member.ref.name}`;
+            return isAuthInvocation(expr.operand)
+                ? `${this.transform(expr.operand)}?.${expr.member.ref.name}`
+                : `${this.transform(expr.operand)}?.${expr.member.ref.name}`;
         }
     }
 
@@ -286,14 +288,15 @@ export class Z3ExpressionTransformer {
             // const formattedName = `${lowerCaseFirst(expr.target.ref.$container.name)}${upperCaseFirst(
             //     expr.target.ref.name
             // )}`;
+            const formattedName = `${expr.target.ref.name}`;
             return this.options?.fieldReferenceContext
                 ? `${this.options.fieldReferenceContext}?.${expr.target.ref.name}`
-                : expr.target.ref.name;
+                : formattedName;
         }
     }
 
     private null() {
-        return 'null';
+        return 'undefined';
     }
 
     private array(expr: ArrayExpr) {
@@ -321,26 +324,21 @@ export class Z3ExpressionTransformer {
     }
 
     private binary(expr: BinaryExpr): string {
-        if (/* expr.left.$type === 'ReferenceExpr' &&  */ expr.right.$type === 'StringLiteral') return 'true';
+        if (/* expr.left.$type === 'ReferenceExpr' &&  */ expr.right.$type === 'StringLiteral') {
+            if (expr.left.$type === 'ReferenceExpr') {
+                return expr.left.target.ref?.name ?? 'unknown';
+            }
+            if (expr.left.$type === 'BooleanLiteral') {
+                return expr.left.value.toString();
+            }
+        }
 
         let left = this.transform(expr.left);
         let right = isBooleanLiteral(expr.right) ? `${expr.right.value}` : this.transform(expr.right);
-        // if (isMemberAccessExpr(expr.left) && !isAuthInvocation(expr.left)) {
-        // left = `args.${left}`;
-        // }
-        // if (isMemberAccessExpr(expr.right) && !isAuthInvocation(expr.right)) {
-        // right = `args.${right}`;
-        // }
-        // if (this.isModelType(expr.left)) {
-        //     left = `(${left}.id)`;
-        // }
-        // if (this.isModelType(expr.right)) {
-        //     right = `(${right}.id)`;
-        // }
         if (this.isModelType(expr.left) && this.isModelType(expr.right)) {
             // comparison between model type values, map to id comparison
-            left = isAuthInvocation(expr.left) ? `(${left}?.id)` : `((args.${left}?.id || args.${left}Id))`;
-            right = isAuthInvocation(expr.right) ? `(${right}.id)` : `((args.${right}?.id || args.${right}Id))`;
+            left = isAuthInvocation(expr.left) ? `(${left}?.id)` : `(${left}?.id || ${left}Id)`;
+            right = isAuthInvocation(expr.right) ? `(${right}.id)` : `(${right}?.id || ${right}Id)`;
             let assertion = `${left} ${expr.operator} ${right}`;
 
             // only args values need implies
@@ -367,12 +365,6 @@ export class Z3ExpressionTransformer {
         // auth().string compared to string argument
         // TODO: for other type we could want to add a constraint to the auth model => we have to create a variable for it
         if (this.isAuthComparison(left, right)) {
-            left =
-                isMemberAccessExpr(expr.left) && !this.isAuthMemberAccessExpr(expr.left, left) ? `args.${left}` : left;
-            right =
-                isMemberAccessExpr(expr.right) && !this.isAuthMemberAccessExpr(expr.right, right)
-                    ? `args.${right}`
-                    : right;
             let assertion = `${left} ${expr.operator} ${right}`;
             if (this.isAuthMemberAccessExpr(expr.left, left)) {
                 assertion = `z3.Implies(!!${right}, ${assertion})`;

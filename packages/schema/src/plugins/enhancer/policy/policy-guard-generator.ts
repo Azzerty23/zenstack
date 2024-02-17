@@ -57,6 +57,7 @@ import { name } from '..';
 import { isCollectionPredicate } from '../../../utils/ast-utils';
 import { ALL_OPERATION_KINDS, CRUD_OPERATION_KINDS } from '../../plugin-utils';
 import { ExpressionWriter, FALSE, TRUE } from './expression-writer';
+import { upperCaseFirst } from 'upper-case-first';
 
 /**
  * Generates source file that contains Prisma query guard objects used for injecting database queries
@@ -1046,46 +1047,57 @@ export class PolicyGenerator {
 
         return func;
     }
-    generateVariables(expressions: Expression[]): Record<string, string> {
+
+    private generateVariables(expressions: Expression[]): Record<string, string> {
         const result: Record<string, string> = {};
         expressions.forEach((expr) => {
             const variables = this.collectVariablesTypes(expr);
             Object.keys(variables).forEach((key) => {
-                if (!result[key]) {
-                    switch (variables[key]) {
-                        case 'NumberLiteral':
-                            result[key] = `z3.Int.const("${key}")`;
-                            break;
-                        case 'BooleanLiteral':
-                            result[key] = `z3.Bool.const("${key}")`;
-                            break;
-                        default:
-                            break;
-                    }
+                switch (variables[key]) {
+                    // TODO: handle DateTime
+                    case 'Int':
+                        result[key] = `z3.Int.const("${key}")`;
+                        break;
+                    case 'String':
+                    case 'Boolean':
+                        result[key] = `z3.Bool.const("${key}")`;
+                        break;
+                    default:
+                        // Data model
+                        result[key] = `z3.Bool.const("${key}")`;
+                        // result[key] = `${variables[key]}`;
+                        break;
                 }
             });
         });
         return result;
     }
-    collectVariablesTypes(expr: Expression): Record<string, Expression['$type']> {
-        const result: Record<string, Expression['$type']> = {};
+
+    private extractType(input: string): string {
+        const words = input.split(' ');
+        const type = words[1].replace(/[^\w\s]/gi, ''); // Remove any non-word characters
+        return type;
+    }
+
+    private collectVariablesTypes(expr: Expression): Record<string, string> {
+        const result: Record<string, string> = {};
         const visit = (node: Expression) => {
-            if (isBinaryExpr(node) && typeof (node.right.$type !== 'StringLiteral')) {
-                if (isReferenceExpr(node.left)) {
-                    // const variableName = `${lowerCaseFirst(
-                    //     node.left.target.ref?.$container.name ?? ''
-                    // )}${upperCaseFirst(node.left.target?.ref?.name ?? '')}`;
-                    const variableName = `${node.left.target?.ref?.name}`;
-                    result[variableName] = node.right.$type;
-                    // visit(node.right);
-                    // } else if (isUnaryExpr(node) && node.operator === '!') {
-                    //     visit(node.operand);
-                } else {
-                    visit(node.left);
-                    visit(node.right);
-                }
+            if (isReferenceExpr(node) && node.target.ref?.$cstNode) {
+                const variableName = isAuthInvocation(node)
+                    ? `user${upperCaseFirst(node.target?.ref?.name)}`
+                    : `${node.target?.ref?.name}`;
+                // const variableName = `${lowerCaseFirst(node.target.ref?.$container.name)}${upperCaseFirst(
+                //     node.target?.ref?.name
+                // )}`;
+                result[variableName] = this.extractType(node.target.ref.$cstNode.text);
+            } else if (isBinaryExpr(node)) {
+                visit(node.left);
+                visit(node.right);
             } else if (isMemberAccessExpr(node)) {
                 visit(node.operand);
+                // } else if (isInvocationExpr(node)) {
+                //     const variableName = `${node.function.$refNode?.text}`;
+                //     result[variableName] = 'Function';
             }
         };
         visit(expr);
