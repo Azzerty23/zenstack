@@ -170,14 +170,14 @@ export const AllReadOperations = [...CoreReadOperations, 'findUniqueOrThrow', 'f
 export type AllReadOperations = (typeof AllReadOperations)[number];
 
 /**
- * List of single-row read operations — `findUnique`/`findFirst` and their 'orThrow' variants.
+ * List of single-row read operations that throw when no row is found.
  */
-export const SingleRowReadOperations = ['findUnique', 'findFirst', 'findUniqueOrThrow', 'findFirstOrThrow'] as const;
+export const SingleRowOrThrowOperations = ['findUniqueOrThrow', 'findFirstOrThrow'] as const;
 
 /**
- * List of single-row read operations.
+ * List of single-row read operations that throw when no row is found.
  */
-export type SingleRowReadOperations = (typeof SingleRowReadOperations)[number];
+export type SingleRowOrThrowOperations = (typeof SingleRowOrThrowOperations)[number];
 
 /**
  * List of all write operations - simply an alias of CoreWriteOperations.
@@ -1225,9 +1225,8 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
             // not a user-visible read — so it must bypass onKyselyQuery plugin hooks. Without the
             // bypass, a read-policy denial would surface as "Record not found" here before the
             // UPDATE runs, preventing the policy plugin from emitting the correct error code.
-            combinedWhere = await internalQueryContextStorage.run(
-                { bypassOnKyselyHooks: true },
-                () => loadThisEntity(),
+            combinedWhere = await internalQueryContextStorage.run({ bypassOnKyselyHooks: true }, () =>
+                loadThisEntity(),
             );
             if (!combinedWhere) {
                 return null;
