@@ -626,8 +626,22 @@ function createModelCrudHandler(
                 // Bind queryContext to the executor so onKyselyQuery hooks can read it.
                 // Uses txClient's executor (which holds the tx connection) when in a transaction.
                 const baseClient = txClient ?? client;
-                const baseExecutor = (baseClient.$qb as any).getExecutor() as ZenStackQueryExecutor;
-                const contextExecutor = baseExecutor.withQueryContext(queryContext);
+                const rawExecutor = (baseClient.$qb as any).getExecutor();
+
+                let contextExecutor: ZenStackQueryExecutor;
+                if (rawExecutor instanceof ZenStackQueryExecutor) {
+                    contextExecutor = rawExecutor.withQueryContext(queryContext);
+                } else {
+                    // Kysely wraps the real executor in NotCommittedOrRolledBackAssertingExecutor
+                    // inside sequential transactions — delegate connection to rawExecutor so
+                    // queries run within the transaction.
+                    const rootZenExecutor = (client as unknown as ClientImpl).kyselyProps
+                        .executor as ZenStackQueryExecutor;
+                    contextExecutor = rootZenExecutor
+                        .withConnectionProvider({ provideConnection: (consumer) => rawExecutor.provideConnection(consumer) })
+                        .withQueryContext(queryContext);
+                }
+
                 const contextClient = (baseClient as unknown as ClientImpl).withExecutor(
                     contextExecutor,
                 ) as unknown as ClientContract<any>;
