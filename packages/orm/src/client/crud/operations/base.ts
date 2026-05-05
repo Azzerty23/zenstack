@@ -6,7 +6,6 @@ import { default as cuid1 } from 'cuid';
 import {
     createQueryId,
     expressionBuilder,
-    SingleConnectionProvider,
     sql,
     type Compilable,
     type ExpressionBuilder,
@@ -1208,10 +1207,10 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
         const loadThisEntity = async () => {
             if (thisEntity === undefined) {
                 thisEntity = bypassReadPolicyForPreload
-                    ? ((await this.readUniqueDirect(kysely, model, {
+                    ? await this.readUniqueDirect(kysely, model, {
                           where: origWhere,
                           select: this.makeIdSelect(model),
-                      } as any)) ?? null)
+                      } as any)
                     : ((await this.getEntityIds(kysely, model, origWhere)) ?? null);
                 if (!thisEntity && throwIfNotFound) {
                     throw createNotFoundError(model);
@@ -2566,24 +2565,14 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
             query = this.dialect.buildSelectAllFields(model, query, (args as any)?.omit, model);
         }
         const queryNode = query.toOperationNode();
-        // Inside a Kysely transaction, kysely.getExecutor() returns a
-        // NotCommittedOrRolledBackAssertingExecutor wrapper — not ZenStackQueryExecutor —
-        // so executeQueryDirect is not directly accessible on it.
-        // Fix: use provideConnection from the outer executor (which correctly routes to the
-        // active transaction connection), then create a ZenStackQueryExecutor scoped to that
-        // connection via the client's own executor (which is always a ZenStackQueryExecutor
-        // regardless of transaction state).
+        // In a transaction, kysely.getExecutor() is Kysely's wrapper — not ZenStackQueryExecutor.
+        // Route connection acquisition through the outer executor; compile and execute on the base one.
         const outerExecutor = kysely.getExecutor();
-        // kyselyProps.executor is always a ZenStackQueryExecutor with DefaultConnectionProvider,
-        // never wrapped by Kysely's transaction machinery.
         const zenExecutor = (this.client as any).kyselyProps.executor as ZenStackQueryExecutor;
-        const r = await outerExecutor.provideConnection(async (connection) => {
-            const scopedExecutor = zenExecutor.withConnectionProvider(
-                new SingleConnectionProvider(connection),
-            ) as ZenStackQueryExecutor;
-            const compiled = scopedExecutor.compileQuery(queryNode, createQueryId());
-            return scopedExecutor.executeQueryDirect(compiled);
-        });
+        const compiled = zenExecutor.compileQuery(queryNode, createQueryId());
+        const r = await outerExecutor.provideConnection((connection) =>
+            zenExecutor.executeQueryDirect(compiled, connection),
+        );
         return r.rows[0] ?? null;
     }
 

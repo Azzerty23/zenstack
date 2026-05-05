@@ -674,19 +674,10 @@ In such cases, ZenStack cannot reliably determine the IDs of the mutated entitie
     }
 
     /**
-     * Execute a compiled query directly, bypassing all `onKyselyQuery` plugin interceptors.
-     * Used by operation handlers for pre-load SELECTs that must not be filtered by the read
-     * policy (e.g. MySQL pre-load before UPDATE so read-denied rows are still reachable).
+     * Execute a compiled query on `connection`, bypassing all `onKyselyQuery` plugin interceptors.
      */
-    async executeQueryDirect(compiledQuery: CompiledQuery): Promise<QueryResult<unknown>> {
-        const result = await this.provideConnection(async (connection) => {
-            return this.internalExecuteQuery(
-                compiledQuery.query,
-                connection,
-                compiledQuery.queryId,
-            );
-        });
-        return this.ensureProperQueryResult(compiledQuery.query, result);
+    async executeQueryDirect(compiledQuery: CompiledQuery, connection: DatabaseConnection): Promise<QueryResult<unknown>> {
+        return this.internalExecuteQuery(compiledQuery.query, connection, compiledQuery.queryId);
     }
 
     private async internalExecuteQuery(
