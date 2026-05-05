@@ -81,19 +81,6 @@ export abstract class BaseCrudDialect<Schema extends SchemaDef> {
      */
     abstract get insertIgnoreMethod(): 'onConflict' | 'ignore';
 
-    /**
-     * Whether the pre-load SELECT (used to resolve entity IDs before a top-level UPDATE on
-     * non-RETURNING dialects) must bypass the read-policy filter.
-     *
-     * MySQL pre-loads entity IDs before running an UPDATE. If the row is read-denied the
-     * pre-load returns null and the UPDATE never runs, masking update-deny error codes.
-     * Setting this to true makes the pre-load use `executeQueryDirect`, which skips
-     * `onKyselyQuery` interceptors (including the read policy).
-     */
-    get requiresUpdatePreloadBypassReadPolicy(): boolean {
-        return false;
-    }
-
     // #endregion
 
     // #region value transformation
@@ -183,9 +170,7 @@ export abstract class BaseCrudDialect<Schema extends SchemaDef> {
                 effectiveOrderBy &&
                 enumerate(effectiveOrderBy).some((ob: any) => typeof ob === 'object' && '_fuzzyRelevance' in ob)
             ) {
-                throw createNotSupportedError(
-                    'cursor pagination cannot be combined with "_fuzzyRelevance" ordering',
-                );
+                throw createNotSupportedError('cursor pagination cannot be combined with "_fuzzyRelevance" ordering');
             }
             result = this.buildCursorFilter(
                 model,
@@ -1683,7 +1668,10 @@ export abstract class BaseCrudDialect<Schema extends SchemaDef> {
             'fuzzy filter must be an object with at least a "search" field',
         );
         const raw = value as Record<string, unknown>;
-        invariant(typeof raw['search'] === 'string' && raw['search'].length > 0, 'fuzzy.search must be a non-empty string');
+        invariant(
+            typeof raw['search'] === 'string' && raw['search'].length > 0,
+            'fuzzy.search must be a non-empty string',
+        );
         const mode = raw['mode'] ?? 'simple';
         invariant(
             mode === 'simple' || mode === 'word' || mode === 'strictWord',

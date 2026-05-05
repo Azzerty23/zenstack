@@ -292,6 +292,7 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
         kysely: AnyKysely,
         model: string,
         args: FindArgs<Schema, GetModels<Schema>, any, true> | undefined,
+        direct = false,
     ): Promise<any[]> {
         // table
         let query = this.dialect.buildSelectModel(model, model);
@@ -317,11 +318,23 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
 
         query = query.modifyEnd(this.makeContextComment({ model, operation: 'read' }));
 
-        let result: any[] = [];
         const compiled = kysely.getExecutor().compileQuery(query.toOperationNode(), createQueryId());
+
+        let result: any[] = [];
         try {
-            const r = await kysely.getExecutor().executeQuery(compiled);
-            result = r.rows;
+            if (direct) {
+                // Bypass onKyselyQuery interceptors (e.g. policy plugin) so read-denied rows
+                // are still reachable. Uses the outer executor for connection acquisition so
+                // the query runs within an active transaction when applicable.
+                const zenExecutor = (this.client as any).kyselyProps.executor as ZenStackQueryExecutor;
+                const r = await kysely
+                    .getExecutor()
+                    .provideConnection((connection) => zenExecutor.executeQueryDirect(compiled, connection));
+                result = r.rows;
+            } else {
+                const r = await kysely.getExecutor().executeQuery(compiled);
+                result = r.rows;
+            }
         } catch (err) {
             // Re-throw ORMErrors (e.g. policy violations with custom error codes) as-is
             // to avoid wrapping them in a generic DBQueryError and losing their type/code.
@@ -332,8 +345,13 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
         return result;
     }
 
-    protected async readUnique(kysely: AnyKysely, model: string, args: FindArgs<Schema, GetModels<Schema>, any, true>) {
-        const result = await this.read(kysely, model, { ...args, take: 1 });
+    protected async readUnique(
+        kysely: AnyKysely,
+        model: string,
+        args: FindArgs<Schema, GetModels<Schema>, any, true>,
+        direct = false,
+    ) {
+        const result = await this.read(kysely, model, { ...args, take: 1 }, direct);
         return result[0] ?? null;
     }
 
@@ -1199,19 +1217,13 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
         // For non-RETURNING dialects that require it (e.g. MySQL), the pre-load SELECT must
         // bypass the read policy so that read-denied rows are still reachable and the UPDATE
         // can run, allowing its own policy error codes to be surfaced.
-        const bypassReadPolicyForPreload =
-            !this.dialect.supportsReturning && !fromRelation && this.dialect.requiresUpdatePreloadBypassReadPolicy;
+        const bypassReadPolicyForPreload = !this.dialect.supportsReturning && !fromRelation;
 
         // lazily load the entity to be updated
         let thisEntity: any;
         const loadThisEntity = async () => {
             if (thisEntity === undefined) {
-                thisEntity = bypassReadPolicyForPreload
-                    ? await this.readUniqueDirect(kysely, model, {
-                          where: origWhere,
-                          select: this.makeIdSelect(model),
-                      } as any)
-                    : ((await this.getEntityIds(kysely, model, origWhere)) ?? null);
+                thisEntity = (await this.getEntityIds(kysely, model, origWhere, bypassReadPolicyForPreload)) ?? null;
                 if (!thisEntity && throwIfNotFound) {
                     throw createNotFoundError(model);
                 }
@@ -2542,38 +2554,16 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
     }
 
     // Given a unique filter of a model, load the entity and return its id fields
-    private getEntityIds(kysely: AnyKysely, model: string, uniqueFilter: any) {
-        return this.readUnique(kysely, model, {
-            where: uniqueFilter,
-            select: this.makeIdSelect(model),
-        });
-    }
-
-    // Like readUnique but bypasses onKyselyQuery interceptors (e.g. policy plugin).
-    // Used for the MySQL update pre-load so read-denied rows are still reachable.
-    private async readUniqueDirect(
-        kysely: AnyKysely,
-        model: string,
-        args: FindArgs<Schema, GetModels<Schema>, any, true>,
-    ): Promise<any | null> {
-        let query = this.dialect.buildSelectModel(model, model);
-        const argsWithTake = { ...args, take: 1 };
-        query = this.dialect.buildFilterSortTake(model, argsWithTake, query, model);
-        if ('select' in args && args.select) {
-            query = this.buildFieldSelection(model, query, args.select, model);
-        } else {
-            query = this.dialect.buildSelectAllFields(model, query, (args as any)?.omit, model);
-        }
-        const queryNode = query.toOperationNode();
-        // In a transaction, kysely.getExecutor() is Kysely's wrapper — not ZenStackQueryExecutor.
-        // Route connection acquisition through the outer executor; compile and execute on the base one.
-        const outerExecutor = kysely.getExecutor();
-        const zenExecutor = (this.client as any).kyselyProps.executor as ZenStackQueryExecutor;
-        const compiled = zenExecutor.compileQuery(queryNode, createQueryId());
-        const r = await outerExecutor.provideConnection((connection) =>
-            zenExecutor.executeQueryDirect(compiled, connection),
+    private getEntityIds(kysely: AnyKysely, model: string, uniqueFilter: any, direct = false) {
+        return this.readUnique(
+            kysely,
+            model,
+            {
+                where: uniqueFilter,
+                select: this.makeIdSelect(model),
+            },
+            direct,
         );
-        return r.rows[0] ?? null;
     }
 
     // Given multiple unique filters, load all matching entities and return their id fields in one query
