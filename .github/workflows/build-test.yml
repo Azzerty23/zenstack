@@ -1,10 +1,7 @@
 name: Build and Test
 
 on:
-    pull_request:
-        branches:
-            - main
-            - dev
+    push:
 
 env:
     TELEMETRY_TRACKING_TOKEN: ${{ secrets.TELEMETRY_TRACKING_TOKEN }}
