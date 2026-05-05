@@ -121,10 +121,13 @@ model Foo {
         // With error code: the plugin detects the policy block and raises RejectedByPolicy
         const dbWithCode = await createPolicyTestClient(schema(true));
         const withCodeRow = await dbWithCode.foo.create({ data: { x: 0 } });
-        await expect(dbWithCode.foo.update({ where: { id: withCodeRow.id }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(dbWithCode.foo.update({ where: { id: withCodeRow.id }, data: { x: -1 } })).toBeRejectedByPolicy(
+            undefined,
+            ['NEED_POSITIVE_X'],
+        );
+        await expect(dbWithCode.foo.delete({ where: { id: withCodeRow.id } })).toBeRejectedByPolicy(undefined, [
             'NEED_POSITIVE_X',
         ]);
-        await expect(dbWithCode.foo.delete({ where: { id: withCodeRow.id } })).toBeRejectedByPolicy(undefined, ['NEED_POSITIVE_X']);
     });
 
     // ── read: single rule, single code ───────────────────────────────────────
@@ -163,16 +166,24 @@ model Foo {
     `,
         );
         const unprotected = db.$unuseAll();
-        const zeroX = await unprotected.foo.create({ data: { x: 0, y: 1 } });
-        const zeroY = await unprotected.foo.create({ data: { x: 1, y: 0 } });
-        const positiveXY = await unprotected.foo.create({ data: { x: 1, y: 1 } });
+        const negX = await unprotected.foo.create({ data: { x: 0, y: 1 } });
+        const negY = await unprotected.foo.create({ data: { x: 1, y: 0 } });
+        const ok = await unprotected.foo.create({ data: { x: 1, y: 1 } });
 
         // deny code: x <= 0 triggers deny rule
-        await expect(db.foo.findFirstOrThrow({ where: { id: zeroX.id } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_X']);
-        await expect(db.foo.findUniqueOrThrow({ where: { id: zeroX.id } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_X']);
+        await expect(db.foo.findFirstOrThrow({ where: { id: zeroX.id } })).toBeRejectedByPolicy(undefined, [
+            'NEGATIVE_X',
+        ]);
+        await expect(db.foo.findUniqueOrThrow({ where: { id: zeroX.id } })).toBeRejectedByPolicy(undefined, [
+            'NEGATIVE_X',
+        ]);
         // allow code: y is not > 0 so allow rule fails
-        await expect(db.foo.findFirstOrThrow({ where: { id: zeroY.id } })).toBeRejectedByPolicy(undefined, ['NEED_POSITIVE_Y']);
-        await expect(db.foo.findUniqueOrThrow({ where: { id: zeroY.id } })).toBeRejectedByPolicy(undefined, ['NEED_POSITIVE_Y']);
+        await expect(db.foo.findFirstOrThrow({ where: { id: zeroY.id } })).toBeRejectedByPolicy(undefined, [
+            'NEED_POSITIVE_Y',
+        ]);
+        await expect(db.foo.findUniqueOrThrow({ where: { id: zeroY.id } })).toBeRejectedByPolicy(undefined, [
+            'NEED_POSITIVE_Y',
+        ]);
         // happy path
         await expect(db.foo.findFirstOrThrow({ where: { id: positiveXY.id } })).resolves.toMatchObject({ x: 1, y: 1 });
         await expect(db.foo.findUniqueOrThrow({ where: { id: positiveXY.id } })).resolves.toMatchObject({ x: 1, y: 1 });
@@ -196,12 +207,14 @@ model Foo {
         // With error code: the plugin detects the policy block → REJECTED_BY_POLICY
         const dbWithCode = await createPolicyTestClient(schema(true));
         const withCodeRow = await dbWithCode.$unuseAll().foo.create({ data: { x: 0 } });
-        await expect(dbWithCode.foo.findUniqueOrThrow({ where: { id: withCodeRow.id } })).toBeRejectedByPolicy(undefined, [
-            'NEED_POSITIVE_X',
-        ]);
-        await expect(dbWithCode.foo.findFirstOrThrow({ where: { id: withCodeRow.id } })).toBeRejectedByPolicy(undefined, [
-            'NEED_POSITIVE_X',
-        ]);
+        await expect(dbWithCode.foo.findUniqueOrThrow({ where: { id: withCodeRow.id } })).toBeRejectedByPolicy(
+            undefined,
+            ['NEED_POSITIVE_X'],
+        );
+        await expect(dbWithCode.foo.findFirstOrThrow({ where: { id: withCodeRow.id } })).toBeRejectedByPolicy(
+            undefined,
+            ['NEED_POSITIVE_X'],
+        );
     });
 
     it('findMany is not affected by read policy error codes (filter-based, returns empty array)', async () => {
@@ -255,21 +268,24 @@ model Foo {
     }
     `,
         );
-        const positiveXY = await db.foo.create({ data: { x: 1, y: 1 } });
+        const row = await db.foo.create({ data: { x: 1, y: 1 } });
         // deny code: post-update violations carry a distinct message alongside the code
-        await expect(db.foo.update({ where: { id: positiveXY.id }, data: { x: -1 } })).toBeRejectedByPolicy(
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: -1 } })).toBeRejectedByPolicy(
             ['post-update policy check'],
             ['NEGATIVE_AFTER_UPDATE'],
         );
         // row unchanged after failed update
-        await expect(db.foo.findUnique({ where: { id: positiveXY.id } })).resolves.toMatchObject({ x: 1, y: 1 });
+        await expect(db.foo.findUnique({ where: { id: row.id } })).resolves.toMatchObject({ x: 1, y: 1 });
         // allow code: y violates allow rule
-        await expect(db.foo.update({ where: { id: positiveXY.id }, data: { y: -1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: row.id }, data: { y: -1 } })).toBeRejectedByPolicy(undefined, [
             'MUST_BE_POSITIVE_AFTER_UPDATE',
         ]);
         // row unchanged after failed update
-        await expect(db.foo.findUnique({ where: { id: positiveXY.id } })).resolves.toMatchObject({ x: 1, y: 1 });
-        await expect(db.foo.update({ where: { id: positiveXY.id }, data: { x: 2, y: 2 } })).resolves.toMatchObject({ x: 2, y: 2 });
+        await expect(db.foo.findUnique({ where: { id: row.id } })).resolves.toMatchObject({ x: 1, y: 1 });
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 2, y: 2 } })).resolves.toMatchObject({
+            x: 2,
+            y: 2,
+        });
     });
 
     // ── update: single rule, single code ─────────────────────────────────────
@@ -287,20 +303,20 @@ model Foo {
     }
     `,
         );
-        const negX = await db.foo.create({ data: { x: -1, y: 2 } });
-        const zeroY = await db.foo.create({ data: { x: 5, y: 0 } });
-        const positiveXY = await db.foo.create({ data: { x: 1, y: 1 } });
+        const neg = await db.foo.create({ data: { x: -1, y: 2 } });
+        const noY = await db.foo.create({ data: { x: 5, y: 0 } });
+        const ok = await db.foo.create({ data: { x: 1, y: 1 } });
 
         // deny code: current x violates deny rule
-        await expect(db.foo.update({ where: { id: negX.id }, data: { y: 3 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: neg.id }, data: { y: 3 } })).toBeRejectedByPolicy(undefined, [
             'CANNOT_UPDATE_NEGATIVE_X',
         ]);
         // allow code: x=5 passes deny rule, but y=0 fails the allow rule
-        await expect(db.foo.update({ where: { id: zeroY.id }, data: { y: 1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: noY.id }, data: { y: 1 } })).toBeRejectedByPolicy(undefined, [
             'NEED_POSITIVE_Y_TO_UPDATE',
         ]);
         // happy path: x=1 > 0 (deny doesn't fire), y=1 > 0 (allow passes)
-        await expect(db.foo.update({ where: { id: positiveXY.id }, data: { x: 2 } })).resolves.toMatchObject({ x: 2 });
+        await expect(db.foo.update({ where: { id: ok.id }, data: { x: 2 } })).resolves.toMatchObject({ x: 2 });
     });
 
     it('surfaces update code on pre-update violation and post-update code on post-update violation (same model)', async () => {
@@ -318,30 +334,30 @@ model Foo {
     }
     `,
         );
-        const negX = await db.foo.create({ data: { x: -1 } });
-        const negY = await db.foo.create({ data: { y: -1 } });
-        const positiveXY = await db.foo.create({ data: { x: 10, y: 1000 } });
+        const denied = await db.foo.create({ data: { x: -1 } });
+        const denied_y = await db.foo.create({ data: { y: -1 } });
+        const ok = await db.foo.create({ data: { x: 10, y: 1000 } });
 
         // pre-update policy denies: update check fires before the write
-        await expect(db.foo.update({ where: { id: negX.id }, data: { x: 50 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: denied.id }, data: { x: 50 } })).toBeRejectedByPolicy(undefined, [
             'CANNOT_UPDATE_NEGATIVE_X',
         ]);
 
         // post-update policy denies: update check passes (x > 0) but result violates post-update
-        await expect(db.foo.update({ where: { id: positiveXY.id }, data: { x: 200 } })).toBeRejectedByPolicy(
+        await expect(db.foo.update({ where: { id: ok.id }, data: { x: 200 } })).toBeRejectedByPolicy(
             ['post-update policy check'],
             ['X_TOO_LARGE_AFTER_UPDATE'],
         );
 
         // row unchanged after both failed updates
-        await expect(db.foo.findUnique({ where: { id: negX.id } })).resolves.toMatchObject({ x: -1 });
-        await expect(db.foo.findUnique({ where: { id: positiveXY.id } })).resolves.toMatchObject({ x: 10 });
+        await expect(db.foo.findUnique({ where: { id: denied.id } })).resolves.toMatchObject({ x: -1 });
+        await expect(db.foo.findUnique({ where: { id: ok.id } })).resolves.toMatchObject({ x: 10 });
 
         // happy path: passes both update and post-update policies
-        await expect(db.foo.update({ where: { id: positiveXY.id }, data: { x: 50 } })).resolves.toMatchObject({ x: 50 });
+        await expect(db.foo.update({ where: { id: ok.id }, data: { x: 50 } })).resolves.toMatchObject({ x: 50 });
 
         // update violation fire before post-update policy denies
-        await expect(db.foo.update({ where: { id: negY.id }, data: { y: -1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: denied_y.id }, data: { y: -1 } })).toBeRejectedByPolicy(undefined, [
             'CANNOT_UPDATE_NEGATIVE_Y',
         ]);
     });
@@ -361,20 +377,20 @@ model Foo {
     }
     `,
         );
-        const negX = await db.foo.create({ data: { x: -1, y: 2 } });
-        const zeroY = await db.foo.create({ data: { x: 5, y: 0 } });
-        const positiveXY = await db.foo.create({ data: { x: 1, y: 1 } });
+        const neg = await db.foo.create({ data: { x: -1, y: 2 } });
+        const noY = await db.foo.create({ data: { x: 5, y: 0 } });
+        const ok = await db.foo.create({ data: { x: 1, y: 1 } });
 
         // deny code: x <= 0 triggers deny rule
-        await expect(db.foo.delete({ where: { id: negX.id } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.delete({ where: { id: neg.id } })).toBeRejectedByPolicy(undefined, [
             'CANNOT_DELETE_NEGATIVE_X',
         ]);
         // allow code: y is not > 0 so allow rule fails
-        await expect(db.foo.delete({ where: { id: zeroY.id } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.delete({ where: { id: noY.id } })).toBeRejectedByPolicy(undefined, [
             'NEED_POSITIVE_Y_TO_DELETE',
         ]);
         // happy path
-        await expect(db.foo.delete({ where: { id: positiveXY.id } })).resolves.toMatchObject({ x: 1, y: 1 });
+        await expect(db.foo.delete({ where: { id: ok.id } })).resolves.toMatchObject({ x: 1, y: 1 });
     });
 
     // ── multiple codes simultaneously ─────────────────────────────────────────
@@ -401,19 +417,19 @@ model Foo {
         ]);
         // create: only one fires → only its code
         await expect(db.foo.create({ data: { x: -1, y: 1 } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_X']);
-        const positiveXY = await db.foo.create({ data: { x: 1, y: 1 } });
+        const row = await db.foo.create({ data: { x: 1, y: 1 } });
         // post-update: both deny rules fire → both codes
-        await expect(db.foo.update({ where: { id: positiveXY.id }, data: { x: -1, y: -1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: -1, y: -1 } })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_X_AFTER_UPDATE',
             'NEGATIVE_Y_AFTER_UPDATE',
         ]);
         // row unchanged after failed update
-        await expect(db.foo.findUnique({ where: { id: positiveXY.id } })).resolves.toMatchObject({ x: 1, y: 1 });
+        await expect(db.foo.findUnique({ where: { id: row.id } })).resolves.toMatchObject({ x: 1, y: 1 });
         // post-update: only one fires → only its code
-        await expect(db.foo.update({ where: { id: positiveXY.id }, data: { x: -1, y: 1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: -1, y: 1 } })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_X_AFTER_UPDATE',
         ]);
-        await expect(db.foo.update({ where: { id: positiveXY.id }, data: { x: 2, y: 2 } })).resolves.toMatchObject({
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 2, y: 2 } })).resolves.toMatchObject({
             x: 2,
             y: 2,
         });
@@ -441,23 +457,23 @@ model Foo {
         ]);
         // create: deny doesn't fire but allow still fails → only allow code
         await expect(db.foo.create({ data: { x: 5, y: 1 } })).toBeRejectedByPolicy(undefined, ['NEED_LARGE_X']);
-        const largeX = await db.foo.create({ data: { x: 15, y: 1 } });
+        const row = await db.foo.create({ data: { x: 15, y: 1 } });
         // post-update: deny fires AND allow fails → both codes
-        await expect(db.foo.update({ where: { id: largeX.id }, data: { x: -1, y: -1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: -1, y: -1 } })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_X_AFTER_UPDATE',
             'MUST_BE_POSITIVE_Y_AFTER_UPDATE',
         ]);
         // row unchanged
-        await expect(db.foo.findUnique({ where: { id: largeX.id } })).resolves.toMatchObject({ x: 15, y: 1 });
+        await expect(db.foo.findUnique({ where: { id: row.id } })).resolves.toMatchObject({ x: 15, y: 1 });
         // post-update: deny doesn't fire but allow fails → only allow code
-        await expect(db.foo.update({ where: { id: largeX.id }, data: { x: 1, y: -1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 1, y: -1 } })).toBeRejectedByPolicy(undefined, [
             'MUST_BE_POSITIVE_Y_AFTER_UPDATE',
         ]);
         // post-update: deny fires but allow passes → only deny code
-        await expect(db.foo.update({ where: { id: largeX.id }, data: { x: -1, y: 1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: -1, y: 1 } })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_X_AFTER_UPDATE',
         ]);
-        await expect(db.foo.update({ where: { id: largeX.id }, data: { x: 2, y: 2 } })).resolves.toMatchObject({
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 2, y: 2 } })).resolves.toMatchObject({
             x: 2,
             y: 2,
         });
@@ -484,16 +500,16 @@ model Foo {
             'NEED_LARGE_Y',
         ]);
         // create: OR semantics — one condition met → success
-        const largeX = await db.foo.create({ data: { x: 15, y: 5 } });
+        const row = await db.foo.create({ data: { x: 15, y: 5 } });
         // post-update: OR semantics — neither condition met → both codes
-        await expect(db.foo.update({ where: { id: largeX.id }, data: { x: -1, y: -1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: -1, y: -1 } })).toBeRejectedByPolicy(undefined, [
             'NEED_POSITIVE_X_AFTER_UPDATE',
             'NEED_POSITIVE_Y_AFTER_UPDATE',
         ]);
         // row unchanged
-        await expect(db.foo.findUnique({ where: { id: largeX.id } })).resolves.toMatchObject({ x: 15, y: 5 });
+        await expect(db.foo.findUnique({ where: { id: row.id } })).resolves.toMatchObject({ x: 15, y: 5 });
         // post-update: OR semantics — one allow passes → no error
-        await expect(db.foo.update({ where: { id: largeX.id }, data: { x: 2, y: -1 } })).resolves.toMatchObject({ x: 2 });
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 2, y: -1 } })).resolves.toMatchObject({ x: 2 });
     });
 
     // ── mixed batch: some rows pass, some fail ────────────────────────────────
@@ -640,11 +656,11 @@ model Foo {
     }
     `,
         );
-        const positiveX = await db.foo.create({ data: { x: 1 } });
-        await expect(db.foo.update({ where: { id: positiveX.id }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, [
+        const row = await db.foo.create({ data: { x: 1 } });
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_AFTER_UPDATE',
         ]);
-        await expect(db.foo.update({ where: { id: positiveX.id }, data: { x: 2 } })).resolves.toMatchObject({ x: 2 });
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 2 } })).resolves.toMatchObject({ x: 2 });
     });
 
     it('mixes enum and string literal error codes', async () => {
@@ -703,11 +719,11 @@ model Foo {
         await expect(db.foo.findFirstOrThrow({ where: { id: negX.id } })).toBeRejectedNotFound();
         await expect(db.foo.findUniqueOrThrow({ where: { id: negX.id } })).toBeRejectedNotFound();
         // update/delete: diagnostic query skipped entirely — behaves as if no codes → NOT_FOUND
-        await expect(db.foo.update({ where: { id: negX.id }, data: { x: 0 } })).toBeRejectedNotFound();
-        await expect(db.foo.delete({ where: { id: negX.id } })).toBeRejectedNotFound();
+        await expect(db.foo.update({ where: { id: negRow.id }, data: { x: 0 } })).toBeRejectedNotFound();
+        await expect(db.foo.delete({ where: { id: negRow.id } })).toBeRejectedNotFound();
         // post-update: postUpdateCheck fires independently of fetchPolicyCodes → REJECTED_BY_POLICY, no codes
-        await expect(db.foo.update({ where: { id: positiveX.id }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, []);
-        await expect(db.foo.update({ where: { id: positiveX.id }, data: { x: 2 } })).resolves.toMatchObject({ x: 2 });
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, []);
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 2 } })).resolves.toMatchObject({ x: 2 });
     });
 
     // ── fetchPolicyCodes opt-out: query-level ─────────────────────────────────
@@ -716,7 +732,7 @@ model Foo {
         const db = await createPolicyTestClient(
             `
 model Foo {
-    id Int @id @default(autoincrement())
+    id Int @id
     x  Int
     y  Int
     @@deny('create', y <= 0, 'NEGATIVE_Y_CREATE')
@@ -732,7 +748,7 @@ model Foo {
 `,
         );
         // create: flag suppresses codes (y=0 triggers deny)
-        await expect(db.foo.create({ data: { x: 1, y: 0 }, fetchPolicyCodes: false })).toBeRejectedByPolicy(
+        await expect(db.foo.create({ data: { id: 1, x: 1, y: 0 }, fetchPolicyCodes: false })).toBeRejectedByPolicy(
             undefined,
             [],
         );
@@ -742,28 +758,38 @@ model Foo {
         const negX = await db.$unuseAll().foo.create({ data: { x: -1, y: 1 } });
         // read: flag skips diagnostic query entirely → null/NOT_FOUND (filter-based, same as no codes)
         await expect(db.foo.findFirst({ where: { id: negX.id }, fetchPolicyCodes: false })).resolves.toBeNull();
-        await expect(db.foo.findFirstOrThrow({ where: { id: negX.id }, fetchPolicyCodes: false })).toBeRejectedNotFound();
-        await expect(db.foo.findUniqueOrThrow({ where: { id: negX.id }, fetchPolicyCodes: false })).toBeRejectedNotFound();
+        await expect(
+            db.foo.findFirstOrThrow({ where: { id: negX.id }, fetchPolicyCodes: false }),
+        ).toBeRejectedNotFound();
+        await expect(
+            db.foo.findUniqueOrThrow({ where: { id: negX.id }, fetchPolicyCodes: false }),
+        ).toBeRejectedNotFound();
         // read: findFirst always returns null; OrThrow variants surface codes
         await expect(db.foo.findFirst({ where: { id: negX.id } })).resolves.toBeNull();
-        await expect(db.foo.findFirstOrThrow({ where: { id: negX.id } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_X_READ']);
-        await expect(db.foo.findUniqueOrThrow({ where: { id: negX.id } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_X_READ']);
+        await expect(db.foo.findFirstOrThrow({ where: { id: negX.id } })).toBeRejectedByPolicy(undefined, [
+            'NEGATIVE_X_READ',
+        ]);
+        await expect(db.foo.findUniqueOrThrow({ where: { id: negX.id } })).toBeRejectedByPolicy(undefined, [
+            'NEGATIVE_X_READ',
+        ]);
         // update: flag skips diagnostic query entirely → NOT_FOUND (same as no codes defined)
-        await expect(db.foo.update({ where: { id: negX.id }, data: { x: 0 }, fetchPolicyCodes: false })).toBeRejectedNotFound();
+        await expect(
+            db.foo.update({ where: { id: 4 }, data: { x: 0 }, fetchPolicyCodes: false }),
+        ).toBeRejectedNotFound();
         // update: without flag, codes surface
-        await expect(db.foo.update({ where: { id: negX.id }, data: { x: 0 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: 4 }, data: { x: 0 } })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_X_UPDATE',
         ]);
         // delete: flag skips diagnostic query entirely → NOT_FOUND
-        await expect(db.foo.delete({ where: { id: negX.id }, fetchPolicyCodes: false })).toBeRejectedNotFound();
+        await expect(db.foo.delete({ where: { id: 4 }, fetchPolicyCodes: false })).toBeRejectedNotFound();
         // delete: without flag, codes surface
-        await expect(db.foo.delete({ where: { id: negX.id } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_X_DELETE']);
+        await expect(db.foo.delete({ where: { id: 4 } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_X_DELETE']);
         // post-update: flag suppresses codes
         await expect(
-            db.foo.update({ where: { id: positiveX.id }, data: { x: -1 }, fetchPolicyCodes: false }),
+            db.foo.update({ where: { id: 3 }, data: { x: -1 }, fetchPolicyCodes: false }),
         ).toBeRejectedByPolicy(undefined, []);
         // post-update: without flag, codes surface
-        await expect(db.foo.update({ where: { id: positiveX.id }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.update({ where: { id: 3 }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_AFTER_UPDATE',
         ]);
     });
@@ -812,7 +838,7 @@ model Foo {
         const db = await createTestClient(
             `
 model Foo {
-    id Int @id @default(autoincrement())
+    id Int @id
     x  Int
     y  Int
     @@deny('create', y <= 0, 'NEGATIVE_Y_CREATE')
@@ -829,43 +855,47 @@ model Foo {
             { plugins: [new PolicyPlugin({ fetchPolicyCodes: false })] },
         );
         // create: query-level true re-enables codes despite plugin false
-        await expect(db.foo.create({ data: { x: 1, y: 0 }, fetchPolicyCodes: true })).toBeRejectedByPolicy(undefined, [
-            'NEGATIVE_Y_CREATE',
-        ]);
+        await expect(db.foo.create({ data: { id: 1, x: 1, y: 0 }, fetchPolicyCodes: true })).toBeRejectedByPolicy(
+            undefined,
+            ['NEGATIVE_Y_CREATE'],
+        );
         // create: without override, codes are suppressed
         await expect(db.foo.create({ data: { x: 1, y: 0 } })).toBeRejectedByPolicy(undefined, []);
         const positiveX = await db.foo.create({ data: { x: 1, y: 1 } });
         const negX = await db.$unuseAll().foo.create({ data: { x: -1, y: 1 } });
         // read: findFirst always returns null; query-level true re-enables codes for OrThrow variants
         await expect(db.foo.findFirst({ where: { id: negX.id }, fetchPolicyCodes: true })).resolves.toBeNull();
-        await expect(db.foo.findFirstOrThrow({ where: { id: negX.id }, fetchPolicyCodes: true })).toBeRejectedByPolicy(undefined, [
-            'NEGATIVE_X_READ',
-        ]);
-        await expect(db.foo.findUniqueOrThrow({ where: { id: negX.id }, fetchPolicyCodes: true })).toBeRejectedByPolicy(undefined, [
-            'NEGATIVE_X_READ',
-        ]);
+        await expect(db.foo.findFirstOrThrow({ where: { id: negX.id }, fetchPolicyCodes: true })).toBeRejectedByPolicy(
+            undefined,
+            ['NEGATIVE_X_READ'],
+        );
+        await expect(db.foo.findUniqueOrThrow({ where: { id: negX.id }, fetchPolicyCodes: true })).toBeRejectedByPolicy(
+            undefined,
+            ['NEGATIVE_X_READ'],
+        );
         // read: without override, codes are suppressed → null/NOT_FOUND (filter-based)
         await expect(db.foo.findFirst({ where: { id: negX.id } })).resolves.toBeNull();
         await expect(db.foo.findFirstOrThrow({ where: { id: negX.id } })).toBeRejectedNotFound();
         await expect(db.foo.findUniqueOrThrow({ where: { id: negX.id } })).toBeRejectedNotFound();
         // update: query-level true re-enables codes despite plugin false
-        await expect(db.foo.update({ where: { id: negX.id }, data: { x: 0 }, fetchPolicyCodes: true })).toBeRejectedByPolicy(
+        await expect(db.foo.update({ where: { id: 4 }, data: { x: 0 }, fetchPolicyCodes: true })).toBeRejectedByPolicy(
             undefined,
             ['NEGATIVE_X_UPDATE'],
         );
         // update: without override, codes are suppressed
-        await expect(db.foo.update({ where: { id: negX.id }, data: { x: 0 } })).toBeRejectedNotFound();
+        await expect(db.foo.update({ where: { id: 4 }, data: { x: 0 } })).toBeRejectedNotFound();
         // delete: query-level true re-enables codes despite plugin false
-        await expect(db.foo.delete({ where: { id: negX.id }, fetchPolicyCodes: true })).toBeRejectedByPolicy(undefined, [
+        await expect(db.foo.delete({ where: { id: 4 }, fetchPolicyCodes: true })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_X_DELETE',
         ]);
         // delete: without override, codes are suppressed
-        await expect(db.foo.delete({ where: { id: negX.id } })).toBeRejectedNotFound();
+        await expect(db.foo.delete({ where: { id: 4 } })).toBeRejectedNotFound();
         // post-update: query-level true re-enables codes despite plugin false
-        await expect(
-            db.foo.update({ where: { id: positiveX.id }, data: { x: -1 }, fetchPolicyCodes: true }),
-        ).toBeRejectedByPolicy(undefined, ['NEGATIVE_AFTER_UPDATE']);
+        await expect(db.foo.update({ where: { id: 3 }, data: { x: -1 }, fetchPolicyCodes: true })).toBeRejectedByPolicy(
+            undefined,
+            ['NEGATIVE_AFTER_UPDATE'],
+        );
         // post-update: without override, codes are suppressed and we get a policy rejection without codes (not NotFound)
-        await expect(db.foo.update({ where: { id: positiveX.id }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, []);
+        await expect(db.foo.update({ where: { id: 3 }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, []);
     });
 });
