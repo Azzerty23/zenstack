@@ -127,10 +127,10 @@ export class ClientImpl {
             });
         }
 
-        if (baseClient?.isTransaction && !executor) {
-            // if we're creating a derived client from a transaction client and not replacing
-            // the executor, reuse the current kysely instance to retain the transaction context
-            this.kysely = baseClient.$qb;
+        if (baseClient?.isTransaction) {
+            // preserve transaction context in derived clients: reuse the kysely instance when
+            // no new executor is provided, or create a Transaction (not plain Kysely) when one is
+            this.kysely = executor ? new Transaction(this.kyselyProps) : baseClient.$qb;
         } else {
             this.kysely = new Kysely(this.kyselyProps);
         }
@@ -638,7 +638,9 @@ function createModelCrudHandler(
                     const rootZenExecutor = (client as unknown as ClientImpl).kyselyProps
                         .executor as ZenStackQueryExecutor;
                     contextExecutor = rootZenExecutor
-                        .withConnectionProvider({ provideConnection: (consumer) => rawExecutor.provideConnection(consumer) })
+                        .withConnectionProvider({
+                            provideConnection: (consumer) => rawExecutor.provideConnection(consumer),
+                        })
                         .withQueryContext(queryContext);
                 }
 
