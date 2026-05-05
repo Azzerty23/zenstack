@@ -57,6 +57,10 @@ export class MySqlCrudDialect<Schema extends SchemaDef> extends LateralJoinDiale
         return 'ignore' as const;
     }
 
+    override get requiresUpdatePreloadBypassReadPolicy(): boolean {
+        return true;
+    }
+
     // #endregion
 
     // #region value transformation

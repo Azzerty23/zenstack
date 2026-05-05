@@ -23,6 +23,8 @@ describe('Policy error code tests', () => {
     // │ fetchPolicyCodes: plugin false          │   ✓    │      ✓      │   ✓    │   ✓    │   ✓    │
     // │ fetchPolicyCodes: query false           │   ✓    │      ✓      │   ✓    │   ✓    │   ✓    │
     // │ fetchPolicyCodes: query overrides plugin│   ✓    │      ✓      │   ✓    │   ✓    │   ✓    │
+    // │ MySQL sim: no-RETURNING update/post-upd │        │      ✓      │   ✓    │        │        │
+    // │ MySQL sim: pre-load bypass (read-denied)│        │             │   ✓    │        │        │
     // └─────────────────────────────────────────┴────────┴─────────────┴────────┴────────┴────────┘
 
     // ── create: single rule, single code ─────────────────────────────────────
@@ -96,10 +98,13 @@ model Foo {
         // With error code: the plugin detects the policy block and raises RejectedByPolicy
         const dbWithCode = await createPolicyTestClient(schema(true));
         const withCodeRow = await dbWithCode.foo.create({ data: { x: 0 } });
-        await expect(dbWithCode.foo.update({ where: { id: withCodeRow.id }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, [
+        await expect(dbWithCode.foo.update({ where: { id: withCodeRow.id }, data: { x: -1 } })).toBeRejectedByPolicy(
+            undefined,
+            ['NEED_POSITIVE_X'],
+        );
+        await expect(dbWithCode.foo.delete({ where: { id: withCodeRow.id } })).toBeRejectedByPolicy(undefined, [
             'NEED_POSITIVE_X',
         ]);
-        await expect(dbWithCode.foo.delete({ where: { id: withCodeRow.id } })).toBeRejectedByPolicy(undefined, ['NEED_POSITIVE_X']);
     });
 
     // ── read: single rule, single code ───────────────────────────────────────
@@ -127,7 +132,9 @@ model Foo {
         await expect(db.foo.findUnique({ where: { id: negX.id } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_X']);
         // allow code: y is not > 0 so allow rule fails
         await expect(db.foo.findFirst({ where: { id: negY.id } })).toBeRejectedByPolicy(undefined, ['NEED_POSITIVE_Y']);
-        await expect(db.foo.findUnique({ where: { id: negY.id } })).toBeRejectedByPolicy(undefined, ['NEED_POSITIVE_Y']);
+        await expect(db.foo.findUnique({ where: { id: negY.id } })).toBeRejectedByPolicy(undefined, [
+            'NEED_POSITIVE_Y',
+        ]);
         // happy path
         await expect(db.foo.findFirst({ where: { id: ok.id } })).resolves.toMatchObject({ x: 1, y: 1 });
         await expect(db.foo.findUnique({ where: { id: ok.id } })).resolves.toMatchObject({ x: 1, y: 1 });
@@ -224,7 +231,10 @@ model Foo {
         ]);
         // row unchanged after failed update
         await expect(db.foo.findUnique({ where: { id: row.id } })).resolves.toMatchObject({ x: 1, y: 1 });
-        await expect(db.foo.update({ where: { id: row.id }, data: { x: 2, y: 2 } })).resolves.toMatchObject({ x: 2, y: 2 });
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 2, y: 2 } })).resolves.toMatchObject({
+            x: 2,
+            y: 2,
+        });
     });
 
     // ── update: single rule, single code ─────────────────────────────────────
@@ -690,7 +700,9 @@ model Foo {
             [],
         );
         // create: without flag, codes surface
-        await expect(db.foo.create({ data: { id: 2, x: 1, y: 0 } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_Y_CREATE']);
+        await expect(db.foo.create({ data: { id: 2, x: 1, y: 0 } })).toBeRejectedByPolicy(undefined, [
+            'NEGATIVE_Y_CREATE',
+        ]);
         await db.foo.create({ data: { id: 3, x: 1, y: 1 } });
         await db.$unuseAll().foo.create({ data: { id: 4, x: -1, y: 1 } });
         // read: flag skips diagnostic query entirely → null (filter-based, same as no codes)
@@ -698,7 +710,9 @@ model Foo {
         // read: without flag, codes surface
         await expect(db.foo.findFirst({ where: { id: 4 } })).toBeRejectedByPolicy(undefined, ['NEGATIVE_X_READ']);
         // update: flag skips diagnostic query entirely → NOT_FOUND (same as no codes defined)
-        await expect(db.foo.update({ where: { id: 4 }, data: { x: 0 }, fetchPolicyCodes: false })).toBeRejectedNotFound();
+        await expect(
+            db.foo.update({ where: { id: 4 }, data: { x: 0 }, fetchPolicyCodes: false }),
+        ).toBeRejectedNotFound();
         // update: without flag, codes surface
         await expect(db.foo.update({ where: { id: 4 }, data: { x: 0 } })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_X_UPDATE',
@@ -715,6 +729,91 @@ model Foo {
         await expect(db.foo.update({ where: { id: 3 }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, [
             'NEGATIVE_AFTER_UPDATE',
         ]);
+    });
+
+    // ── MySQL simulation (no-RETURNING dialect) ───────────────────────────────
+    //
+    // On dialects without RETURNING (MySQL), the ORM pre-loads entity ID fields before
+    // an UPDATE so it can re-read the row afterwards. That pre-load is an internal SELECT
+    // that must bypass onKyselyQuery hooks; otherwise a read-policy denial would hide the
+    // row before the UPDATE policy check ever runs, masking the real error code.
+    //
+    // We simulate this code path with SQLite by overriding schema.provider.type to 'mysql'
+    // after database setup, which makes getCrudDialect() return MySqlCrudDialect
+    // (supportsReturning = false) while still using the real SQLite connection.
+
+    it('surfaces update error code on simulated MySQL (no-RETURNING)', async () => {
+        const db = await createPolicyTestClient(
+            `
+    model Foo {
+        id Int @id @default(autoincrement())
+        x  Int
+        y  Int
+        @@allow('create,read', true)
+        @@deny('update', x <= 0, 'CANNOT_UPDATE_NEGATIVE_X')
+        @@allow('update', y > 0, 'NEED_POSITIVE_Y_TO_UPDATE')
+    }
+    `,
+        );
+        const neg = await db.foo.create({ data: { x: -1, y: 2 } });
+        const noY = await db.foo.create({ data: { x: 5, y: 0 } });
+        const ok = await db.foo.create({ data: { x: 1, y: 1 } });
+
+        await expect(db.foo.update({ where: { id: neg.id }, data: { y: 3 } })).toBeRejectedByPolicy(undefined, [
+            'CANNOT_UPDATE_NEGATIVE_X',
+        ]);
+        await expect(db.foo.update({ where: { id: noY.id }, data: { y: 1 } })).toBeRejectedByPolicy(undefined, [
+            'NEED_POSITIVE_Y_TO_UPDATE',
+        ]);
+        await expect(db.foo.update({ where: { id: ok.id }, data: { x: 2 } })).resolves.toMatchObject({ x: 2 });
+    });
+
+    // it.only('surfaces update error code even when row is read-denied (MySQL pre-load bypass)', async () => {
+    it('surfaces update error code even when row is read-denied (MySQL pre-load bypass)', async () => {
+        // Regression test for the internalQueryContextStorage bypass.
+        // Schema: row has a read-deny condition (y < 0) AND an update-deny condition (x < 0).
+        // On MySQL, the pre-load SELECT must ignore the read policy; otherwise it returns null
+        // (row hidden by read-deny) and the UPDATE never runs, masking the update error code.
+        const db = await createPolicyTestClient(
+            `
+    model Foo {
+        id Int @id @default(autoincrement())
+        x  Int
+        y  Int
+        @@allow('create', true)
+        @@deny('read', y < 0, 'BAD_Y_READ')
+        @@allow('read', true)
+        @@deny('update', x < 0, 'BAD_X_UPDATE')
+        @@allow('update', true)
+    }
+    `,
+        );
+        // Create a row that is read-denied (y < 0) AND update-denied (x < 0)
+        const row = await db.$unuseAll().foo.create({ data: { x: -1, y: -1 } });
+        // The pre-load must bypass the read policy so the UPDATE can run and surface its own code
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 0 } })).toBeRejectedByPolicy(undefined, [
+            'BAD_X_UPDATE',
+        ]);
+    });
+
+    it('surfaces post-update error code on simulated MySQL (no-RETURNING)', async () => {
+        const db = await createPolicyTestClient(
+            `
+    model Foo {
+        id Int @id @default(autoincrement())
+        x  Int
+        @@allow('create,read,update', true)
+        @@deny('post-update', x <= 0, 'NEGATIVE_AFTER_UPDATE')
+    }
+    `,
+        );
+        const row = await db.foo.create({ data: { x: 1 } });
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: -1 } })).toBeRejectedByPolicy(
+            ['post-update policy check'],
+            ['NEGATIVE_AFTER_UPDATE'],
+        );
+        await expect(db.foo.findUnique({ where: { id: row.id } })).resolves.toMatchObject({ x: 1 });
+        await expect(db.foo.update({ where: { id: row.id }, data: { x: 2 } })).resolves.toMatchObject({ x: 2 });
     });
 
     it('fetchPolicyCodes:false for update/delete behaves identically to a model without error codes', async () => {
@@ -778,9 +877,10 @@ model Foo {
             { plugins: [new PolicyPlugin({ fetchPolicyCodes: false })] },
         );
         // create: query-level true re-enables codes despite plugin false
-        await expect(db.foo.create({ data: { id: 1, x: 1, y: 0 }, fetchPolicyCodes: true })).toBeRejectedByPolicy(undefined, [
-            'NEGATIVE_Y_CREATE',
-        ]);
+        await expect(db.foo.create({ data: { id: 1, x: 1, y: 0 }, fetchPolicyCodes: true })).toBeRejectedByPolicy(
+            undefined,
+            ['NEGATIVE_Y_CREATE'],
+        );
         // create: without override, codes are suppressed
         await expect(db.foo.create({ data: { id: 2, x: 1, y: 0 } })).toBeRejectedByPolicy(undefined, []);
         await db.foo.create({ data: { id: 3, x: 1, y: 1 } });
@@ -805,9 +905,10 @@ model Foo {
         // delete: without override, codes are suppressed
         await expect(db.foo.delete({ where: { id: 4 } })).toBeRejectedNotFound();
         // post-update: query-level true re-enables codes despite plugin false
-        await expect(
-            db.foo.update({ where: { id: 3 }, data: { x: -1 }, fetchPolicyCodes: true }),
-        ).toBeRejectedByPolicy(undefined, ['NEGATIVE_AFTER_UPDATE']);
+        await expect(db.foo.update({ where: { id: 3 }, data: { x: -1 }, fetchPolicyCodes: true })).toBeRejectedByPolicy(
+            undefined,
+            ['NEGATIVE_AFTER_UPDATE'],
+        );
         // post-update: without override, codes are suppressed and we get a policy rejection without codes (not NotFound)
         await expect(db.foo.update({ where: { id: 3 }, data: { x: -1 } })).toBeRejectedByPolicy(undefined, []);
     });

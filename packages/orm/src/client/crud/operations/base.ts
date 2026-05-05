@@ -6,6 +6,7 @@ import { default as cuid1 } from 'cuid';
 import {
     createQueryId,
     expressionBuilder,
+    SingleConnectionProvider,
     sql,
     type Compilable,
     type ExpressionBuilder,
@@ -51,6 +52,7 @@ import {
 } from '../../query-utils';
 import { getCrudDialect } from '../dialects';
 import type { BaseCrudDialect } from '../dialects/base-dialect';
+import { ZenStackQueryExecutor } from '../../executor/zenstack-query-executor';
 import { InputValidator } from '../validator';
 
 /**
@@ -1195,11 +1197,22 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
             }
         }
 
+        // For non-RETURNING dialects that require it (e.g. MySQL), the pre-load SELECT must
+        // bypass the read policy so that read-denied rows are still reachable and the UPDATE
+        // can run, allowing its own policy error codes to be surfaced.
+        const bypassReadPolicyForPreload =
+            !this.dialect.supportsReturning && !fromRelation && this.dialect.requiresUpdatePreloadBypassReadPolicy;
+
         // lazily load the entity to be updated
         let thisEntity: any;
         const loadThisEntity = async () => {
             if (thisEntity === undefined) {
-                thisEntity = (await this.getEntityIds(kysely, model, origWhere)) ?? null;
+                thisEntity = bypassReadPolicyForPreload
+                    ? ((await this.readUniqueDirect(kysely, model, {
+                          where: origWhere,
+                          select: this.makeIdSelect(model),
+                      } as any)) ?? null)
+                    : ((await this.getEntityIds(kysely, model, origWhere)) ?? null);
                 if (!thisEntity && throwIfNotFound) {
                     throw createNotFoundError(model);
                 }
@@ -2535,6 +2548,43 @@ export abstract class BaseOperationHandler<Schema extends SchemaDef> {
             where: uniqueFilter,
             select: this.makeIdSelect(model),
         });
+    }
+
+    // Like readUnique but bypasses onKyselyQuery interceptors (e.g. policy plugin).
+    // Used for the MySQL update pre-load so read-denied rows are still reachable.
+    private async readUniqueDirect(
+        kysely: AnyKysely,
+        model: string,
+        args: FindArgs<Schema, GetModels<Schema>, any, true>,
+    ): Promise<any | null> {
+        let query = this.dialect.buildSelectModel(model, model);
+        const argsWithTake = { ...args, take: 1 };
+        query = this.dialect.buildFilterSortTake(model, argsWithTake, query, model);
+        if ('select' in args && args.select) {
+            query = this.buildFieldSelection(model, query, args.select, model);
+        } else {
+            query = this.dialect.buildSelectAllFields(model, query, (args as any)?.omit, model);
+        }
+        const queryNode = query.toOperationNode();
+        // Inside a Kysely transaction, kysely.getExecutor() returns a
+        // NotCommittedOrRolledBackAssertingExecutor wrapper — not ZenStackQueryExecutor —
+        // so executeQueryDirect is not directly accessible on it.
+        // Fix: use provideConnection from the outer executor (which correctly routes to the
+        // active transaction connection), then create a ZenStackQueryExecutor scoped to that
+        // connection via the client's own executor (which is always a ZenStackQueryExecutor
+        // regardless of transaction state).
+        const outerExecutor = kysely.getExecutor();
+        // kyselyProps.executor is always a ZenStackQueryExecutor with DefaultConnectionProvider,
+        // never wrapped by Kysely's transaction machinery.
+        const zenExecutor = (this.client as any).kyselyProps.executor as ZenStackQueryExecutor;
+        const r = await outerExecutor.provideConnection(async (connection) => {
+            const scopedExecutor = zenExecutor.withConnectionProvider(
+                new SingleConnectionProvider(connection),
+            ) as ZenStackQueryExecutor;
+            const compiled = scopedExecutor.compileQuery(queryNode, createQueryId());
+            return scopedExecutor.executeQueryDirect(compiled);
+        });
+        return r.rows[0] ?? null;
     }
 
     // Given multiple unique filters, load all matching entities and return their id fields in one query
