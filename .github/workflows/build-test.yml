@@ -16,6 +16,19 @@ jobs:
         runs-on: ubuntu-latest
 
         services:
+            postgres:
+                image: postgres
+                env:
+                    POSTGRES_PASSWORD: postgres
+                # Set health checks to wait until postgres has started
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+                ports:
+                    - 5432:5432
+
             mysql:
                 image: mysql:8.4
                 env:
@@ -32,7 +45,7 @@ jobs:
         strategy:
             matrix:
                 node-version: [22.x]
-                provider: [sqlite, mysql]
+                provider: [sqlite, postgresql, mysql]
 
         steps:
             - name: Checkout
@@ -64,9 +77,9 @@ jobs:
               uses: actions/cache@v4
               with:
                   path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-                  key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+                  key: ${{ runner.os }}-node-${{ matrix.node-version }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
                   restore-keys: |
-                      ${{ runner.os }}-pnpm-store-
+                      ${{ runner.os }}-node-${{ matrix.node-version }}-pnpm-store-
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile

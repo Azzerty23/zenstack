@@ -1,6 +1,12 @@
 import { invariant } from '@zenstackhq/common-helpers';
 import type { BaseCrudDialect, ClientContract, CRUD_EXT, ProceedKyselyQueryFunction } from '@zenstackhq/orm';
-import { CoreWriteOperations, getCrudDialect, QueryUtils, RejectedByPolicyReason, SchemaUtils, SingleRowReadOperations } from '@zenstackhq/orm';
+import {
+    getCrudDialect,
+    QueryUtils,
+    RejectedByPolicyReason,
+    SchemaUtils,
+    SingleRowOrThrowOperations,
+} from '@zenstackhq/orm';
 import {
     ExpressionUtils,
     type BuiltinType,
@@ -60,8 +66,7 @@ import {
     trueNode,
 } from './utils';
 
-const SINGLE_ROW_READ_OPERATIONS = new Set<string>(SingleRowReadOperations);
-const ORM_WRITE_OPERATIONS = new Set<string>(CoreWriteOperations);
+const SINGLE_ROW_OR_THROW_OPERATIONS = new Set<string>(SingleRowOrThrowOperations);
 
 export type CrudQueryNode = SelectQueryNode | InsertQueryNode | UpdateQueryNode | DeleteQueryNode;
 
@@ -99,8 +104,11 @@ export class PolicyHandler<Schema extends SchemaDef> extends OperationNodeTransf
         if (!this.isMutationQueryNode(node)) {
             const selectNode = node as SelectQueryNode;
             const result = await proceed(this.transformNode(node));
-            // When 0 rows returned on a single-row read, distinguish "not found" from policy denial
-            if (result.rows.length === 0 && SINGLE_ROW_READ_OPERATIONS.has(policyContextStorage.getStore()?.operation ?? '')) {
+            // When 0 rows returned on a throwing single-row read (findFirstOrThrow/findUniqueOrThrow), distinguish "not found" from policy denial
+            if (
+                result.rows.length === 0 &&
+                SINGLE_ROW_OR_THROW_OPERATIONS.has(policyContextStorage.getStore()?.operation ?? '')
+            ) {
                 await this.postReadZeroRowsCheck(selectNode, proceed);
             }
             return result;
@@ -268,9 +276,7 @@ export class PolicyHandler<Schema extends SchemaDef> extends OperationNodeTransf
         }
     }
 
-    // Called when a single-row read returns 0 rows. Skips internal reads (read-back after mutation).
     private async postReadZeroRowsCheck(node: SelectQueryNode, proceed: ProceedKyselyQueryFunction): Promise<void> {
-        if (ORM_WRITE_OPERATIONS.has(policyContextStorage.getStore()?.operation ?? '')) return;
         if (!node.from || node.from.froms.length !== 1) return;
         const extractedTable = this.extractTableName(node.from.froms[0]!);
         if (!extractedTable) return;

@@ -170,14 +170,14 @@ export const AllReadOperations = [...CoreReadOperations, 'findUniqueOrThrow', 'f
 export type AllReadOperations = (typeof AllReadOperations)[number];
 
 /**
- * List of single-row read operations — `findUnique`/`findFirst` and their 'orThrow' variants.
+ * List of single-row read operations that throw when no row is found.
  */
-export const SingleRowReadOperations = ['findUnique', 'findFirst', 'findUniqueOrThrow', 'findFirstOrThrow'] as const;
+export const SingleRowOrThrowOperations = ['findUniqueOrThrow', 'findFirstOrThrow'] as const;
 
 /**
- * List of single-row read operations.
+ * List of single-row read operations that throw when no row is found.
  */
-export type SingleRowReadOperations = (typeof SingleRowReadOperations)[number];
+export type SingleRowOrThrowOperations = (typeof SingleRowOrThrowOperations)[number];
 
 /**
  * List of all write operations - simply an alias of CoreWriteOperations.
